@@ -34,6 +34,7 @@ const LABEL = "font-medium text-(--ui-text-secondary) max-w-[12rem] truncate";
 const ATOMS = {
   usage: host.state && host.state.focusedUsage,
   model: host.state && host.state.model,
+  session: host.state && host.state.focusedStoredSessionId,
   gateway: host.state && host.state.gateway,
 };
 
@@ -157,22 +158,23 @@ function shortModel(name) {
 
 function ModelChip({ model, convo, ranges, dayLabel, monthLabel, updated, error }) {
   const label = shortModel(model);
-  const liveCost = convo ? num(convo.cost_usd) : null;
-  const liveTokens = convo ? num(convo.tokens) : null;
-  const ctxPct = convo ? num(convo.context_percent) : null;
+  const cCost = num(convo && convo.cost_usd);
+  const cTokens = num(convo && convo.tokens);
+  const ctxPct = num(convo && convo.context_percent);
   const t = ranges && ranges.today ? ranges.today : null;
   const m = ranges && ranges.month ? ranges.month : null;
-  const hasLive = liveCost !== null;
+  const hasConvo = cCost !== null;
   const hasRanges = !!(t && m);
-  if (!hasLive && !hasRanges) return null;
+  if (!hasConvo && !hasRanges) return null;
   const matched = hasRanges && ranges.matched !== false;
-  const cCost = hasLive ? money(liveCost) : "—";
+  const cCostTxt = hasConvo ? money(cCost) : "—";
   const tCost = matched ? money(t.cost_usd) : "—";
   const mCost = matched ? money(m.cost_usd) : "—";
+  const convoSrc = convo && convo.source === "store" ? "store, may lag mid-turn" : "live";
   const lines = [
-    `${model}${hasRanges && ranges.provider ? ` (${ranges.provider})` : ""} — ${hasLive ? "live" : "estimated"} conversation stats, not provider billing`,
-    hasLive
-      ? `This conversation: ${cCost} · ${compact(liveTokens)} tokens${ctxPct !== null ? ` · ctx ${Math.round(ctxPct)}%` : ""}`
+    `${model}${hasRanges && ranges.provider ? ` (${ranges.provider})` : ""} — conversation stats from the ${convoSrc} tracker, not provider billing`,
+    hasConvo
+      ? `This conversation: ${cCostTxt} · ${compact(cTokens)} tokens${ctxPct !== null ? ` · ctx ${Math.round(ctxPct)}%` : ""} (${convoSrc})`
       : "This conversation: —",
     hasRanges && matched
       ? `Today (${dayLabel}): ${tCost} · ${compact(t.tokens)} tokens · ${num(t.sessions) ?? 0} sessions`
@@ -206,15 +208,17 @@ function UsageBar() {
   const { scope, key } = useScope();
   const rawUsage = useSafeValue(ATOMS.usage, null);
   const rawModel = useSafeValue(ATOMS.model, null);
+  const rawSession = useSafeValue(ATOMS.session, null);
   const gateway = useSafeValue(ATOMS.gateway, null);
   useRefreshOnTurnEnd(PREFIX);
   const model = rawModel ? String(rawModel).trim() : "";
-  const convo = rawUsage && typeof rawUsage === "object"
-    ? { cost_usd: rawUsage.cost_usd, tokens: rawUsage.total, context_percent: rawUsage.context_percent }
-    : null;
+  const sid = rawSession ? String(rawSession).trim() : "";
+  const liveCost = rawUsage && typeof rawUsage === "object" ? num(rawUsage.cost_usd) : null;
+  const liveTokens = rawUsage && typeof rawUsage === "object" ? num(rawUsage.total) : null;
+  const ctxPct = rawUsage && typeof rawUsage === "object" ? num(rawUsage.context_percent) : null;
   const q = useQuery({
-    queryKey: [...PREFIX, key, model],
-    queryFn: () => profileCli(scope, "usagebar", ["summary", `--model=${model}`]),
+    queryKey: [...PREFIX, key, model, sid],
+    queryFn: () => profileCli(scope, "usagebar", ["summary", `--model=${model}`, ...(sid ? [`--session=${sid}`] : [])]),
     enabled: !!scope && !!model && gateway === "open",
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -224,6 +228,15 @@ function UsageBar() {
   if (!scope || !model) return null;
   const d = q.data;
   const ranges = d && d.model ? { today: d.model.today, month: d.model.month, provider: d.model.provider, matched: d.model.matched } : null;
+  const sess = d && d.session ? d.session : null;
+  // Live atom first; the store's per-conversation totals as fallback so the
+  // conversation value never reads "—" while the session has known usage.
+  const convo =
+    liveCost !== null
+      ? { cost_usd: liveCost, tokens: liveTokens, context_percent: ctxPct, source: "live" }
+      : sess
+        ? { cost_usd: num(sess.cost_usd), tokens: num(sess.tokens), context_percent: null, source: "store" }
+        : null;
   return _jsx(ModelChip, {
     model: model,
     convo: convo,

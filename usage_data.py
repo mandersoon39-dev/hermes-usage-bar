@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.3.2"
+PLUGIN_VERSION = "1.3.3"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {
@@ -275,6 +275,20 @@ def summary(session_id: str = None, model: str = None) -> dict:
                     "SELECT COUNT(*) FROM session_model_usage WHERE model = ?", (m,)
                 ).fetchone()[0] > 0,
             }
+    # Slim per-conversation totals — the desktop chip's fallback when the
+    # app's live usage atom is unavailable for the focused session.
+    session = None
+    if sid:
+        srow = conn.execute(
+            "SELECT model, billing_provider FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        sess = _totals(conn, "session_id = ?", (sid,))
+        session = {
+            "model": srow["model"] if srow else None,
+            "provider": srow["billing_provider"] if srow else None,
+            "cost_usd": sess["cost_usd"],
+            "tokens": sess["tokens"],
+        }
     providers = {}
     for group in ("anthropic", "gemini", OTHER):
         providers[group] = {
@@ -290,5 +304,6 @@ def summary(session_id: str = None, model: str = None) -> dict:
         "month": now.strftime("%Y-%m"),
         "session_id": sid,
         "model": current,
+        "session": session,
         "providers": providers,
     }
