@@ -17,9 +17,11 @@ session store:
   (`host.state.focusedUsage` — same numbers the Usage panel shows, updates
   in real time); today/month come from the profile's CLI
   (`usagebar summary --model <model>`). Hover for tokens, sessions,
-  context %, provider. Refreshes on every turn end, on model switch, + 30s
-  backstop. Hidden when no session is focused. Local models show $0.00
-  until they get a real price model.
+  context %, provider. Refreshes on every turn end (+ one delayed refetch
+  after the backend flushes), on model/profile switch, + 30s backstop.
+  Hidden when no session is focused. `—` means unknown (model has no usage
+  rows yet, CLI down, or profile has no route) — never a fake zero. Local
+  models show $0.00 until they get a real price model.
 - `hermes usagebar` / `hermes usagebar summary [--session <session-id>] --json`
 - `hermes usagebar session <session-id> [--json]`
 - `/usagebar` and `/usagebar session <session-id>` slash commands

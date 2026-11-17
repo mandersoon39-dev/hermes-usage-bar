@@ -15,16 +15,32 @@ import { host, STATUSBAR_AREAS, useQuery, useQueryClient, useValue } from "@herm
  * (host.state.focusedUsage — same numbers the app's Usage panel shows);
  * today/month come from the focused profile's CLI
  * (usagebar summary --model <model>), i.e. read-only SQL over state.db.
+ * "—" means unknown: the model has no usage rows yet, the CLI is down, or
+ * the profile has no route — never a fake zero.
  *
- * Refresh: every turn end (busy -> idle), on model switch, 30s backstop.
+ * Refresh: every turn end (busy -> idle, plus one delayed refetch after the
+ * backend flushes), on model/profile switch, 30s backstop.
  * Theme variables only — no hard-coded colours, so it follows every skin.
  */
 const CLI_TIMEOUT_MS = 20_000;
 const PREFIX = ["usagebar"];
 const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)";
 const SEP = "px-0.5 text-(--ui-text-quaternary)";
-const VALUE = "text-(--ui-text-quaternary)";
+const VALUE = "text-(--ui-text-secondary)";
 const LABEL = "font-medium text-(--ui-text-secondary) max-w-[12rem] truncate";
+
+// Atoms that may be absent on older app versions. Presence is static per
+// app version, so the conditional subscription order is stable across renders.
+const ATOMS = {
+  usage: host.state && host.state.focusedUsage,
+  model: host.state && host.state.model,
+  gateway: host.state && host.state.gateway,
+};
+
+function useSafeValue(atom, fallback) {
+  if (atom) return useValue(atom);
+  return fallback;
+}
 
 function scopeOf(owner) {
   const connectionId = String((owner && owner.connectionId) || "").trim();
@@ -34,10 +50,15 @@ function scopeOf(owner) {
 
 async function resolveRoute(scope) {
   const routes = await host.profileRoutes();
-  const exact = scope ? routes.filter((r) => r.connectionId === scope.connectionId && r.profile === scope.profile) : [];
-  if (exact.length === 1) return exact[0];
-  // No focused chat (or ambiguous): fall back to the desktop's primary local route.
-  const fallback = routes.find((r) => r.primary) ?? routes.find((r) => r.mode === "local") ?? routes[0];
+  if (scope) {
+    const exact = routes.filter((r) => r.connectionId === scope.connectionId && r.profile === scope.profile);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) return exact.find((r) => r.mode === "local") ?? exact[0];
+    // A focused chat must belong to some route. Without an exact match we
+    // refuse rather than silently attribute another profile's numbers.
+    throw new Error(`No route for profile ${scope.profile}`);
+  }
+  const fallback = routes.find((r) => r.primary && r.mode === "local") ?? routes.find((r) => r.primary) ?? routes.find((r) => r.mode === "local") ?? routes[0];
   if (!fallback) throw new Error("No Hermes profile route available");
   return fallback;
 }
@@ -58,7 +79,8 @@ function parseCliJson(output) {
 
 async function profileCli(scope, command, argv) {
   const route = await resolveRoute(scope);
-  const res = await host.requestProfile(route, "cli.exec", { argv: ["--profile", route.targetProfile, command, ...argv, "--json"], timeout: CLI_TIMEOUT_MS / 1000 }, CLI_TIMEOUT_MS + 5_000);
+  const res = await host.requestProfile(route, "cli.exec", { argv: ["--profile", route.targetProfile ?? route.profile, command, ...argv, "--json"], timeout: CLI_TIMEOUT_MS / 1000 }, CLI_TIMEOUT_MS + 5_000);
+  if (!res) throw new Error("cli.exec returned no response");
   if (res.blocked) throw new Error(res.hint || "cli.exec blocked");
   const payload = parseCliJson(res.output || "");
   if (payload.error) throw new Error(payload.error);
@@ -71,71 +93,98 @@ function useScope() {
   return { scope, key: scope ? `${scope.connectionId}::${scope.profile}` : "primary" };
 }
 
-/** Invalidate our queries when a turn finishes, so numbers stay current without polling. */
+/** Refetch when a turn finishes, once immediately and once after the backend has had time to flush state.db. */
 function useRefreshOnTurnEnd(prefix) {
   const busy = useValue(host.state.busy);
   const qc = useQueryClient();
   const was = useRef(busy);
   useEffect(() => {
-    if (was.current && !busy) void qc.invalidateQueries({ queryKey: prefix });
+    const falling = was.current && !busy;
     was.current = busy;
+    if (!falling) return;
+    void qc.invalidateQueries({ queryKey: prefix });
+    const t = setTimeout(() => void qc.invalidateQueries({ queryKey: prefix }), 2000);
+    return () => clearTimeout(t);
   }, [busy, qc, prefix]);
 }
 
-function money(v) {
+function num(v) {
+  // Number(null) is 0 — guard it so null means unknown, not a fake zero.
+  if (v === null || v === undefined) return null;
   const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return `$${n >= 100 ? n.toFixed(0) : n.toFixed(2)}`;
+  return Number.isFinite(n) ? n : null;
+}
+
+function money(v) {
+  const n = num(v);
+  if (n === null) return "—";
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  return `${sign}$${abs >= 100 ? abs.toFixed(0) : abs.toFixed(2)}`;
 }
 
 function compact(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "—";
-  if (v < 1000) return String(Math.round(v));
-  if (v < 1e6) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}K`;
-  if (v < 1e9) return `${(v / 1e6).toFixed(1)}M`;
-  return `${(v / 1e9).toFixed(1)}B`;
+  const v = num(n);
+  if (v === null) return "—";
+  const a = Math.abs(v);
+  if (a < 1000) return String(Math.round(v));
+  const r1 = (x) => (Math.round(x * 10) / 10).toFixed(1);
+  const k = v / 1000;
+  if (Math.abs(k) < 999.95) return `${r1(k)}K`;
+  const m = v / 1e6;
+  if (Math.abs(m) < 999.95) return `${r1(m)}M`;
+  return `${r1(v / 1e9)}B`;
 }
 
 function shortDate(iso, kind) {
+  if (typeof iso !== "string") return "—";
   const parts = iso.split("-").map(Number);
-  const date = new Date(parts[0] || 1970, (parts[1] || 1) - 1, kind === "day" ? parts[2] || 1 : 1);
+  if (parts.length < 3 || parts.some((n) => !Number.isFinite(n))) return "—";
+  const date = new Date(parts[0], parts[1] - 1, kind === "day" ? parts[2] : 1);
   return kind === "month"
     ? date.toLocaleString(undefined, { month: "short", year: "numeric" })
     : date.toLocaleString(undefined, { month: "short", day: "numeric" });
 }
 
 function shortModel(name) {
-  let base = String(name || "").split("/").pop();
+  const full = String(name || "");
+  let base = full.split("/").pop();
   const cut = base.search(/[[\(]/);
   if (cut >= 0) base = base.slice(0, cut);
-  base = base.trim();
+  base = base.trim() || full.trim();
   return base.length > 20 ? `${base.slice(0, 19)}…` : base;
 }
 
-function ModelChip({ model, convo, ranges, dayLabel, monthLabel, updated }) {
+function ModelChip({ model, convo, ranges, dayLabel, monthLabel, updated, error }) {
   const label = shortModel(model);
-  const hasLive = convo && Number.isFinite(convo.cost_usd);
-  const hasRanges = !!(ranges && ranges.today && ranges.month);
+  const liveCost = convo ? num(convo.cost_usd) : null;
+  const liveTokens = convo ? num(convo.tokens) : null;
+  const ctxPct = convo ? num(convo.context_percent) : null;
+  const t = ranges && ranges.today ? ranges.today : null;
+  const m = ranges && ranges.month ? ranges.month : null;
+  const hasLive = liveCost !== null;
+  const hasRanges = !!(t && m);
   if (!hasLive && !hasRanges) return null;
-  const cCost = hasLive ? money(convo.cost_usd) : "—";
-  const tCost = hasRanges ? money(ranges.today.cost_usd) : "—";
-  const mCost = hasRanges ? money(ranges.month.cost_usd) : "—";
+  const matched = hasRanges && ranges.matched !== false;
+  const cCost = hasLive ? money(liveCost) : "—";
+  const tCost = matched ? money(t.cost_usd) : "—";
+  const mCost = matched ? money(m.cost_usd) : "—";
   const lines = [
     `${model}${hasRanges && ranges.provider ? ` (${ranges.provider})` : ""} — ${hasLive ? "live" : "estimated"} conversation stats, not provider billing`,
     hasLive
-      ? `This conversation: ${cCost} · ${compact(convo.tokens)} tokens${Number.isFinite(convo.context_percent) ? ` · ctx ${Math.round(convo.context_percent)}%` : ""}`
+      ? `This conversation: ${cCost} · ${compact(liveTokens)} tokens${ctxPct !== null ? ` · ctx ${Math.round(ctxPct)}%` : ""}`
       : "This conversation: —",
-    hasRanges
-      ? `Today (${dayLabel}): ${tCost} · ${compact(ranges.today.tokens)} tokens · ${ranges.today.sessions} sessions`
-      : "Today: —",
-    hasRanges
-      ? `Month (${monthLabel}): ${mCost} · ${compact(ranges.month.tokens)} tokens · ${ranges.month.sessions} sessions`
+    hasRanges && matched
+      ? `Today (${dayLabel}): ${tCost} · ${compact(t.tokens)} tokens · ${num(t.sessions) ?? 0} sessions`
+      : `Today: —${hasRanges && !matched ? " (no usage rows for this model yet)" : ""}`,
+    hasRanges && matched
+      ? `Month (${monthLabel}): ${mCost} · ${compact(m.tokens)} tokens · ${num(m.sessions) ?? 0} sessions`
       : "Month: —",
   ];
   if (updated) lines.push(`Updated ${new Date(updated).toLocaleTimeString()}`);
-  return _jsx("button", {
-    type: "button",
+  if (error) lines.push(`Usage bar unavailable: ${error}`);
+  return _jsx("span", {
+    role: "status",
     title: lines.join("\n"),
     "aria-label": `${label}: ${cCost} this conversation, ${tCost} today, ${mCost} this month`,
     className: CHIP,
@@ -155,8 +204,9 @@ function ModelChip({ model, convo, ranges, dayLabel, monthLabel, updated }) {
 
 function UsageBar() {
   const { scope, key } = useScope();
-  const rawUsage = useValue(host.state.focusedUsage);
-  const rawModel = useValue(host.state.model);
+  const rawUsage = useSafeValue(ATOMS.usage, null);
+  const rawModel = useSafeValue(ATOMS.model, null);
+  const gateway = useSafeValue(ATOMS.gateway, null);
   useRefreshOnTurnEnd(PREFIX);
   const model = rawModel ? String(rawModel).trim() : "";
   const convo = rawUsage && typeof rawUsage === "object"
@@ -164,16 +214,16 @@ function UsageBar() {
     : null;
   const q = useQuery({
     queryKey: [...PREFIX, key, model],
-    queryFn: () => profileCli(scope, "usagebar", ["summary", "--model", model]),
-    enabled: !!model,
+    queryFn: () => profileCli(scope, "usagebar", ["summary", `--model=${model}`]),
+    enabled: !!scope && !!model && gateway === "open",
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchOnWindowFocus: false,
     retry: 0,
   });
-  if (!model) return null;
+  if (!scope || !model) return null;
   const d = q.data;
-  const ranges = d && d.model ? { today: d.model.today, month: d.model.month, provider: d.model.provider } : null;
+  const ranges = d && d.model ? { today: d.model.today, month: d.model.month, provider: d.model.provider, matched: d.model.matched } : null;
   return _jsx(ModelChip, {
     model: model,
     convo: convo,
@@ -181,6 +231,7 @@ function UsageBar() {
     dayLabel: d ? shortDate(d.today, "day") : "—",
     monthLabel: d ? shortDate(d.month, "month") : "—",
     updated: d && d.generated_at ? d.generated_at : null,
+    error: q.error ? String(q.error.message || q.error) : null,
   });
 }
 

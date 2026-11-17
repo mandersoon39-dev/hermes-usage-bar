@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.3.1"
+PLUGIN_VERSION = "1.3.2"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {
@@ -247,9 +247,15 @@ def summary(session_id: str = None, model: str = None) -> dict:
             f"SELECT billing_provider FROM session_model_usage WHERE model IN ({ph}) LIMIT 1",
             candidates,
         ).fetchone()
+        cnt = conn.execute(
+            f"SELECT COUNT(*) FROM session_model_usage WHERE model IN ({ph})", candidates
+        ).fetchone()[0]
         current = {
             "name": mdl,
             "provider": prov["billing_provider"] if prov else None,
+            # False means the model has no usage rows at all, so $0.00 would
+            # be a fake zero; the UI shows "—" (unknown) instead.
+            "matched": int(cnt) > 0,
             "today": _totals(conn, f"model IN ({ph}) AND COALESCE(first_seen, last_seen) >= ?", (*candidates, today_ts)),
             "month": _totals(conn, f"model IN ({ph}) AND COALESCE(first_seen, last_seen) >= ?", (*candidates, month_ts)),
         }
@@ -265,6 +271,9 @@ def summary(session_id: str = None, model: str = None) -> dict:
                 "convo": _totals(conn, "session_id = ? AND model = ?", (sid, m)),
                 "today": _totals(conn, "model = ? AND COALESCE(first_seen, last_seen) >= ?", (m, today_ts)),
                 "month": _totals(conn, "model = ? AND COALESCE(first_seen, last_seen) >= ?", (m, month_ts)),
+                "matched": conn.execute(
+                    "SELECT COUNT(*) FROM session_model_usage WHERE model = ?", (m,)
+                ).fetchone()[0] > 0,
             }
     providers = {}
     for group in ("anthropic", "gemini", OTHER):
