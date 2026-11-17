@@ -1,7 +1,7 @@
 name: usage-bar
-version: "1.0.0"
+version: "1.1.0"
 manifest_version: 2
-description: "Status-bar chips showing today's and this month's cost and tokens for the paid API providers (Claude/Anthropic, AI Studio/Google) from the local session store. Read-only, no network, no telemetry."
+description: "Status-bar chips showing this conversation's, today's and this month's cost for the paid API providers (Claude/Anthropic, AI Studio/Google), from the local session store. Read-only, no network, no telemetry."
 author: mandersoon (local)
 license: MIT
 tags: [desktop, usage, statusbar, cost]

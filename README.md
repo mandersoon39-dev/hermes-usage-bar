@@ -9,12 +9,13 @@ session store:
 
 ## Surfaces
 - Desktop status-bar chips (this folder's `desktop/plugin.js`, published to
-  `~/.hermes/desktop-plugins/usage-bar/`):
-  `this chat 3.0M tok` · `Claude $0.74d $57.70m` · `AI Studio $5.30d $16.57m`
-  — hover for full details. The `this chat` chip follows
-  `host.state.activeSessionId` (the conversation you're looking at), refreshes
-  on every turn end + 30s; provider chips refresh on every turn end + 5 min.
-- `hermes usagebar` / `hermes usagebar summary --json`
+  `~/.hermes/desktop-plugins/usage-bar/`), one per provider, three values in
+  order Convo | Daily | Monthly:
+  `Claude $0.42 | $0.74 | $57.70` · `AI Studio $2.11 | $5.30 | $16.57`
+  — the first value is the focused conversation's usage attributed to that
+  provider (`host.state.activeSessionId`). Hover for tokens, sessions, top
+  model. Refreshes on every turn end, on conversation switch, + 30s backstop.
+- `hermes usagebar` / `hermes usagebar summary [--session <session-id>] --json`
 - `hermes usagebar session <session-id> [--json]`
 - `/usagebar` and `/usagebar session <session-id>` slash commands
 
@@ -29,5 +30,5 @@ no credentials, no telemetry.
   CLI through the gateway's `cli.exec` RPC, so no gateway restart is needed
   for data; the chip works per focused profile.
 - A chip is hidden when its provider has no cost/tokens in either period.
-- The `this chat` chip is an in-progress estimate for the active conversation:
-  it tracks the session store, which updates as turns complete (not mid-turn).
+- The conversation value is an in-progress estimate: it tracks the session
+  store, which updates as turns complete (not mid-turn).

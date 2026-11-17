@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {
@@ -70,10 +70,18 @@ def _empty_bucket() -> dict:
     }
 
 
-def _bucket(conn: sqlite3.Connection, start_ts: float) -> dict:
-    """Per-group aggregates over rows whose usage started at/after ``start_ts``."""
+def _bucket(conn: sqlite3.Connection, start_ts: float = None, session_id: str = None) -> dict:
+    """Per-group aggregates.
+
+    With ``session_id``: rows for that one conversation (no date filter).
+    Without: rows whose usage started at/after ``start_ts``.
+    """
     group_sql = _group_case_sql()
     cost_sql = "SUM(COALESCE(estimated_cost_usd, 0) + COALESCE(actual_cost_usd, 0))"
+    if session_id:
+        where, params = "session_id = ?", (session_id,)
+    else:
+        where, params = "COALESCE(first_seen, last_seen) >= ?", (start_ts,)
 
     by_model = conn.execute(
         f"""
@@ -85,20 +93,20 @@ def _bucket(conn: sqlite3.Connection, start_ts: float) -> dict:
                  + COALESCE(cache_write_tokens, 0)) AS cr,
                {cost_sql}                           AS cost
         FROM session_model_usage
-        WHERE COALESCE(first_seen, last_seen) >= ?
+        WHERE {where}
         GROUP BY grp, model
         """,
-        (start_ts,),
+        params,
     ).fetchall()
     sessions = conn.execute(
         f"""
         SELECT {group_sql} AS grp,
                COUNT(DISTINCT session_id) AS sessions
         FROM session_model_usage
-        WHERE COALESCE(first_seen, last_seen) >= ?
+        WHERE {where}
         GROUP BY grp
         """,
-        (start_ts,),
+        params,
     ).fetchall()
 
     buckets = {group: _empty_bucket() for group in ("anthropic", "gemini", OTHER)}
@@ -184,18 +192,21 @@ def session_usage(session_id: str) -> dict:
     }
 
 
-def summary() -> dict:
-    """Today's and this calendar month's cost/tokens per display group."""
+def summary(session_id: str = None) -> dict:
+    """Per display group: this conversation (when given), today, this calendar month."""
     now = datetime.now()
     today_ts = datetime(now.year, now.month, now.day).timestamp()
     month_ts = datetime(now.year, now.month, 1).timestamp()
+    sid = (session_id or "").strip() or None
     with _connect() as conn:
-        today_b = _bucket(conn, today_ts)
-        month_b = _bucket(conn, month_ts)
+        today_b = _bucket(conn, start_ts=today_ts)
+        month_b = _bucket(conn, start_ts=month_ts)
+        convo_b = _bucket(conn, session_id=sid) if sid else {}
     providers = {}
     for group in ("anthropic", "gemini", OTHER):
         providers[group] = {
             "label": GROUP_LABELS[group],
+            "convo": (convo_b.get(group) or _empty_bucket()) if sid else None,
             "today": today_b.get(group) or _empty_bucket(),
             "month": month_b.get(group) or _empty_bucket(),
         }
@@ -204,5 +215,6 @@ def summary() -> dict:
         "generated_at": now.isoformat(timespec="seconds"),
         "today": now.strftime("%Y-%m-%d"),
         "month": now.strftime("%Y-%m"),
+        "session_id": sid,
         "providers": providers,
     }

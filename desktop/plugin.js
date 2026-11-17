@@ -5,21 +5,27 @@ import { host, STATUSBAR_AREAS, useQuery, useQueryClient, useValue } from "@herm
 /**
  * usage-bar — desktop half.
  *
- * Status-bar chips at the bottom-right of the app: today's and this month's
- * cost + tokens for the paid API providers (Claude/Anthropic, AI Studio/Google),
- * read from the profile's session store.
+ * Status-bar chips at the bottom-right of the app, one per paid API provider:
+ *
+ *   Claude $0.42 | $0.74 | $57.70    AI Studio $2.11 | $5.30 | $16.57
+ *
+ * Three values per chip, in order: this conversation (the focused chat's
+ * usage attributed to that provider) | today | this calendar month.
  *
  * Data path
- *   host.requestProfile(route, "cli.exec", { argv: ["--profile", p, "usagebar", "summary", "--json"] })
+ *   host.requestProfile(route, "cli.exec",
+ *     { argv: ["--profile", p, "usagebar", "summary", "--session", sid, "--json"] })
  *   -> the focused profile's Hermes CLI -> read-only SQL over state.db.
  *   Each call is a fresh process, so the plugin works without a gateway restart.
  *
- * Refresh: every turn end (busy -> idle) plus a 5-minute backstop.
+ * Refresh: every turn end (busy -> idle), on conversation switch, 30s backstop.
  * Theme variables only — no hard-coded colours, so it follows every skin.
  */
 const CLI_TIMEOUT_MS = 20_000;
 const PREFIX = ["usagebar"];
 const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)";
+const SEP = "px-0.5 text-(--ui-text-quaternary)";
+const VALUE = "text-(--ui-text-quaternary)";
 
 function scopeOf(owner) {
   const connectionId = String((owner && owner.connectionId) || "").trim();
@@ -101,9 +107,10 @@ function shortDate(iso, kind) {
 function ProviderChip({ group, data }) {
   const p = (data && data.providers && data.providers[group]) || null;
   if (!p) return null;
+  const c = p.convo || { cost_usd: 0, tokens: 0 };
   const t = p.today, m = p.month;
   if (!t || !m) return null;
-  const hasAny = (t.cost_usd || 0) > 0 || (t.tokens || 0) > 0 || (m.cost_usd || 0) > 0 || (m.tokens || 0) > 0;
+  const hasAny = (c.cost_usd || 0) > 0 || (t.cost_usd || 0) > 0 || (m.cost_usd || 0) > 0;
   if (!hasAny) return null;
   const label = group === "anthropic" ? "Claude" : "AI Studio";
   const todayLabel = shortDate(data.today, "day");
@@ -111,64 +118,26 @@ function ProviderChip({ group, data }) {
   const topLine = m.top_model ? `Top model: ${m.top_model} (${money(m.top_model_cost_usd)})` : "";
   const tip = [
     `${p.label} — Hermes cost estimates, not provider billing`,
-    `${todayLabel}: ${money(t.cost_usd)} · ${compact(t.tokens)} tokens · ${t.sessions} sessions`,
-    `${monthLabel}: ${money(m.cost_usd)} · ${compact(m.tokens)} tokens · ${m.sessions} sessions`,
+    `This conversation: ${money(c.cost_usd)} · ${compact(c.tokens)} tokens`,
+    `Today (${todayLabel}): ${money(t.cost_usd)} · ${compact(t.tokens)} tokens · ${t.sessions} sessions`,
+    `Month (${monthLabel}): ${money(m.cost_usd)} · ${compact(m.tokens)} tokens · ${m.sessions} sessions`,
     topLine,
     `Updated ${new Date(data.generated_at).toLocaleTimeString()}`,
   ].filter(Boolean).join("\n");
   return _jsx("button", {
     type: "button",
     title: tip,
-    "aria-label": `${label}: ${money(t.cost_usd)} today, ${money(m.cost_usd)} this month`,
+    "aria-label": `${label}: ${money(c.cost_usd)} this conversation, ${money(t.cost_usd)} today, ${money(m.cost_usd)} this month`,
     className: CHIP,
     children: _jsxs("span", {
-      className: "inline-flex items-center gap-1.5 whitespace-nowrap",
+      className: "inline-flex items-center gap-1 whitespace-nowrap",
       children: [
         _jsx("span", { className: "font-medium text-(--ui-text-secondary)", children: label }),
-        _jsx("span", { className: "text-(--ui-text-quaternary)", children: `${money(t.cost_usd)}d  ${money(m.cost_usd)}m` }),
-      ],
-    }),
-  });
-}
-
-function SessionChip() {
-  const activeSessionId = useValue(host.state.activeSessionId);
-  const { scope, key } = useScope();
-  useRefreshOnTurnEnd(PREFIX);
-  const sid = activeSessionId ? String(activeSessionId).trim() : "";
-  const q = useQuery({
-    queryKey: [...PREFIX, "session", key, sid],
-    queryFn: () => profileCli(scope, "usagebar", ["session", sid]),
-    enabled: !!sid,
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: false,
-    retry: 0,
-  });
-  const d = q.data;
-  if (!d) return null;
-  if (!d.tokens && !(d.cost_usd > 0)) return null;
-  const paid = (d.cost_usd || 0) > 0;
-  const value = paid ? `${money(d.cost_usd)} · ${compact(d.tokens)}` : `${compact(d.tokens)} tok`;
-  const title = d.title || d.session_id;
-  const tip = [
-    `${title} (${d.session_id})`,
-    `${compact(d.tokens)} tokens (${compact(d.input_tokens)} in · ${compact(d.output_tokens)} out · ${compact(d.cache_tokens)} cache)`,
-    `Cost: ${money(d.cost_usd)} estimated (in-progress while the conversation is active)`,
-    `${d.model || "?"} · ${d.messages} messages · ${d.api_calls} API calls`,
-    d.models && d.models.length ? `Top model: ${d.models[0].model} (${money(d.models[0].cost_usd)})` : "",
-    d.last_activity_at ? `Last activity ${new Date(d.last_activity_at * 1000).toLocaleString()}` : "",
-  ].filter(Boolean).join("\n");
-  return _jsx("button", {
-    type: "button",
-    title: tip,
-    "aria-label": `Current conversation: ${value}`,
-    className: CHIP,
-    children: _jsxs("span", {
-      className: "inline-flex items-center gap-1.5 whitespace-nowrap",
-      children: [
-        _jsx("span", { className: "font-medium text-(--ui-text-secondary)", children: "this chat" }),
-        _jsx("span", { className: "text-(--ui-text-quaternary)", children: value }),
+        _jsx("span", { className: VALUE, children: money(c.cost_usd) }),
+        _jsx("span", { className: SEP, children: "|" }),
+        _jsx("span", { className: VALUE, children: money(t.cost_usd) }),
+        _jsx("span", { className: SEP, children: "|" }),
+        _jsx("span", { className: VALUE, children: money(m.cost_usd) }),
       ],
     }),
   });
@@ -176,12 +145,14 @@ function SessionChip() {
 
 function UsageBar() {
   const { scope, key } = useScope();
+  const activeSessionId = useValue(host.state.activeSessionId);
   useRefreshOnTurnEnd(PREFIX);
+  const sid = activeSessionId ? String(activeSessionId).trim() : "";
   const q = useQuery({
-    queryKey: [...PREFIX, key],
-    queryFn: () => profileCli(scope, "usagebar", ["summary"]),
-    staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    queryKey: [...PREFIX, key, sid],
+    queryFn: () => profileCli(scope, "usagebar", ["summary", ...(sid ? ["--session", sid] : [])]),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
     refetchOnWindowFocus: false,
     retry: 0,
   });
@@ -189,7 +160,6 @@ function UsageBar() {
   return _jsxs("span", {
     className: "inline-flex items-center gap-1",
     children: [
-      _jsx(SessionChip, {}),
       _jsx(ProviderChip, { group: "anthropic", data: q.data }),
       _jsx(ProviderChip, { group: "gemini", data: q.data }),
     ],

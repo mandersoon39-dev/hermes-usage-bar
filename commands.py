@@ -76,7 +76,8 @@ def slash_command(raw_args: str) -> str:
 
 def setup_argparse(subparser) -> None:
     subs = subparser.add_subparsers(dest="usagebar_command")
-    p = subs.add_parser("summary", help="Today's and this month's cost and tokens per paid provider")
+    p = subs.add_parser("summary", help="This conversation's, today's and this month's cost and tokens per paid provider")
+    p.add_argument("--session", default=None, help="Session id to include per-provider conversation usage")
     p.add_argument("--json", action="store_true", help="Emit JSON for the desktop status bar")
     s = subs.add_parser("session", help="Usage for one conversation (session id)")
     s.add_argument("session_id", help="Session id, e.g. 20261116_224351_297c0c")
@@ -93,7 +94,7 @@ def handle_cli(args) -> None:
     as_json = bool(getattr(args, "json", False))
     try:
         if cmd == "summary":
-            payload = data.summary()
+            payload = data.summary(session_id=getattr(args, "session", None))
         elif cmd == "session":
             sid = (getattr(args, "session_id", None) or "").strip()
             if not sid:
