@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.3.0"
+PLUGIN_VERSION = "1.3.1"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {

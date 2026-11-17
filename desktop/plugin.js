@@ -106,7 +106,10 @@ function shortDate(iso, kind) {
 }
 
 function shortModel(name) {
-  let base = String(name || "").split("/").pop().split("[").split("(")[0].trim();
+  let base = String(name || "").split("/").pop();
+  const cut = base.search(/[[\(]/);
+  if (cut >= 0) base = base.slice(0, cut);
+  base = base.trim();
   return base.length > 20 ? `${base.slice(0, 19)}…` : base;
 }
 
