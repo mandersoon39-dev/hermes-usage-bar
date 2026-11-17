@@ -8,13 +8,14 @@ session store:
 - **AI Studio** — `billing_provider = gemini` (generativelanguage.googleapis.com)
 
 ## Surfaces
-- Desktop status-bar chips (this folder's `desktop/plugin.js`, published to
-  `~/.hermes/desktop-plugins/usage-bar/`), one per provider, three values in
+- Desktop status-bar chip (this folder's `desktop/plugin.js`, published to
+  `~/.hermes/desktop-plugins/usage-bar/`) for the model the focused
+  conversation is running (`host.state.activeSessionId`), three values in
   order Convo | Daily | Monthly:
-  `Claude $0.42 | $0.74 | $57.70` · `AI Studio $2.11 | $5.30 | $16.57`
-  — the first value is the focused conversation's usage attributed to that
-  provider (`host.state.activeSessionId`). Hover for tokens, sessions, top
-  model. Refreshes on every turn end, on conversation switch, + 30s backstop.
+  `claude-opus-5-5 $0.42 | $0.74 | $57.70`
+  Hover for tokens, sessions, provider. Refreshes on every turn end, on
+  conversation switch, + 30s backstop. Hidden when the conversation has no
+  model yet. Local models show $0.00 until they get a real price model.
 - `hermes usagebar` / `hermes usagebar summary [--session <session-id>] --json`
 - `hermes usagebar session <session-id> [--json]`
 - `/usagebar` and `/usagebar session <session-id>` slash commands

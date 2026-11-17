@@ -5,12 +5,13 @@ import { host, STATUSBAR_AREAS, useQuery, useQueryClient, useValue } from "@herm
 /**
  * usage-bar — desktop half.
  *
- * Status-bar chips at the bottom-right of the app, one per paid API provider:
+ * One status-bar chip at the bottom-right of the app, for the model the
+ * focused conversation is running:
  *
- *   Claude $0.42 | $0.74 | $57.70    AI Studio $2.11 | $5.30 | $16.57
+ *   claude-opus-5-5 $0.42 | $0.74 | $57.70
  *
- * Three values per chip, in order: this conversation (the focused chat's
- * usage attributed to that provider) | today | this calendar month.
+ * Three values in order: this conversation | today | this calendar month
+ * (cost estimates for that model). Hover for tokens, sessions, provider.
  *
  * Data path
  *   host.requestProfile(route, "cli.exec",
@@ -26,6 +27,7 @@ const PREFIX = ["usagebar"];
 const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)";
 const SEP = "px-0.5 text-(--ui-text-quaternary)";
 const VALUE = "text-(--ui-text-quaternary)";
+const LABEL = "font-medium text-(--ui-text-secondary) max-w-[12rem] truncate";
 
 function scopeOf(owner) {
   const connectionId = String((owner && owner.connectionId) || "").trim();
@@ -104,40 +106,40 @@ function shortDate(iso, kind) {
     : date.toLocaleString(undefined, { month: "short", day: "numeric" });
 }
 
-function ProviderChip({ group, data }) {
-  const p = (data && data.providers && data.providers[group]) || null;
-  if (!p) return null;
-  const c = p.convo || { cost_usd: 0, tokens: 0 };
-  const t = p.today, m = p.month;
-  if (!t || !m) return null;
-  const hasAny = (c.cost_usd || 0) > 0 || (t.cost_usd || 0) > 0 || (m.cost_usd || 0) > 0;
-  if (!hasAny) return null;
-  const label = group === "anthropic" ? "Claude" : "AI Studio";
+function shortModel(name) {
+  const base = String(name || "").split("[").split("(")[0].trim();
+  return base.length > 20 ? `${base.slice(0, 19)}…` : base;
+}
+
+function ModelChip({ data }) {
+  const m = data.model;
+  if (!m) return null;
+  const c = m.convo, t = m.today, mo = m.month;
+  if (!c || !t || !mo) return null;
+  const label = shortModel(m.name);
   const todayLabel = shortDate(data.today, "day");
   const monthLabel = shortDate(data.month, "month");
-  const topLine = m.top_model ? `Top model: ${m.top_model} (${money(m.top_model_cost_usd)})` : "";
   const tip = [
-    `${p.label} — Hermes cost estimates, not provider billing`,
+    `${m.name} (${m.provider || "unknown provider"}) — Hermes cost estimates, not provider billing`,
     `This conversation: ${money(c.cost_usd)} · ${compact(c.tokens)} tokens`,
     `Today (${todayLabel}): ${money(t.cost_usd)} · ${compact(t.tokens)} tokens · ${t.sessions} sessions`,
-    `Month (${monthLabel}): ${money(m.cost_usd)} · ${compact(m.tokens)} tokens · ${m.sessions} sessions`,
-    topLine,
+    `Month (${monthLabel}): ${money(mo.cost_usd)} · ${compact(mo.tokens)} tokens · ${mo.sessions} sessions`,
     `Updated ${new Date(data.generated_at).toLocaleTimeString()}`,
-  ].filter(Boolean).join("\n");
+  ].join("\n");
   return _jsx("button", {
     type: "button",
     title: tip,
-    "aria-label": `${label}: ${money(c.cost_usd)} this conversation, ${money(t.cost_usd)} today, ${money(m.cost_usd)} this month`,
+    "aria-label": `${label}: ${money(c.cost_usd)} this conversation, ${money(t.cost_usd)} today, ${money(mo.cost_usd)} this month`,
     className: CHIP,
     children: _jsxs("span", {
       className: "inline-flex items-center gap-1 whitespace-nowrap",
       children: [
-        _jsx("span", { className: "font-medium text-(--ui-text-secondary)", children: label }),
+        _jsx("span", { className: LABEL, children: label }),
         _jsx("span", { className: VALUE, children: money(c.cost_usd) }),
         _jsx("span", { className: SEP, children: "|" }),
         _jsx("span", { className: VALUE, children: money(t.cost_usd) }),
         _jsx("span", { className: SEP, children: "|" }),
-        _jsx("span", { className: VALUE, children: money(m.cost_usd) }),
+        _jsx("span", { className: VALUE, children: money(mo.cost_usd) }),
       ],
     }),
   });
@@ -157,13 +159,7 @@ function UsageBar() {
     retry: 0,
   });
   if (!q.data) return null; // stay invisible until we have a real number (or if the backend is off)
-  return _jsxs("span", {
-    className: "inline-flex items-center gap-1",
-    children: [
-      _jsx(ProviderChip, { group: "anthropic", data: q.data }),
-      _jsx(ProviderChip, { group: "gemini", data: q.data }),
-    ],
-  });
+  return _jsx(ModelChip, { data: q.data });
 }
 
 export default {

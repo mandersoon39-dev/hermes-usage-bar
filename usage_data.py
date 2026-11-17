@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.2.0"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {
@@ -67,6 +67,33 @@ def _empty_bucket() -> dict:
         "sessions": 0,
         "top_model": None,
         "top_model_cost_usd": 0.0,
+    }
+
+
+def _totals(conn: sqlite3.Connection, where: str, params: tuple) -> dict:
+    """Flat cost/token totals for rows matching ``where`` (no grouping)."""
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS i,
+               COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS o,
+               COALESCE(SUM(COALESCE(cache_read_tokens, 0)
+                 + COALESCE(cache_write_tokens, 0)), 0) AS cr,
+               COALESCE(SUM(COALESCE(estimated_cost_usd, 0)
+                 + COALESCE(actual_cost_usd, 0)), 0) AS cost,
+               COUNT(DISTINCT session_id) AS sessions
+        FROM session_model_usage
+        WHERE {where}
+        """,
+        params,
+    ).fetchone()
+    tokens = int(row["i"]) + int(row["o"]) + int(row["cr"])
+    return {
+        "cost_usd": round(float(row["cost"]), 4),
+        "input_tokens": int(row["i"]),
+        "output_tokens": int(row["o"]),
+        "cache_tokens": int(row["cr"]),
+        "tokens": tokens,
+        "sessions": int(row["sessions"]),
     }
 
 
@@ -202,6 +229,20 @@ def summary(session_id: str = None) -> dict:
         today_b = _bucket(conn, start_ts=today_ts)
         month_b = _bucket(conn, start_ts=month_ts)
         convo_b = _bucket(conn, session_id=sid) if sid else {}
+    current = None
+    if sid:
+        srow = conn.execute(
+            "SELECT model, billing_provider FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        if srow and srow["model"]:
+            m = srow["model"]
+            current = {
+                "name": m,
+                "provider": srow["billing_provider"],
+                "convo": _totals(conn, "session_id = ? AND model = ?", (sid, m)),
+                "today": _totals(conn, "model = ? AND COALESCE(first_seen, last_seen) >= ?", (m, today_ts)),
+                "month": _totals(conn, "model = ? AND COALESCE(first_seen, last_seen) >= ?", (m, month_ts)),
+            }
     providers = {}
     for group in ("anthropic", "gemini", OTHER):
         providers[group] = {
@@ -216,5 +257,6 @@ def summary(session_id: str = None) -> dict:
         "today": now.strftime("%Y-%m-%d"),
         "month": now.strftime("%Y-%m"),
         "session_id": sid,
+        "model": current,
         "providers": providers,
     }

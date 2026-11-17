@@ -28,18 +28,24 @@ def _fmt(n) -> str:
     return str(int(n or 0))
 
 
-def render_text() -> str:
-    s = data.summary()
+def render_text(session_id: str = None) -> str:
+    s = data.summary(session_id=session_id)
     lines = [
         f"Usage - {s['today']} today, {s['month']} month "
         "(costs are Hermes estimates, not provider billing):"
     ]
+    if s.get("model"):
+        m = s["model"]
+        lines.append(
+            f"  Current model {m['name']} ({m['provider']}):"
+            f" ${m['convo']['cost_usd']:.2f} convo | ${m['today']['cost_usd']:.2f} today | ${m['month']['cost_usd']:.2f} month"
+        )
     for group in ("anthropic", "gemini"):
         p = s["providers"][group]
-        t, m = p["today"], p["month"]
+        t, mm = p["today"], p["month"]
         lines.append(
             f"  {p['label']}: ${t['cost_usd']:.2f} today - {_fmt(t['tokens'])} tok - {t['sessions']} sessions"
-            f" | ${m['cost_usd']:.2f} month - {_fmt(m['tokens'])} tok - {m['sessions']} sessions"
+            f" | ${mm['cost_usd']:.2f} month - {_fmt(mm['tokens'])} tok - {mm['sessions']} sessions"
         )
     return "\n".join(lines)
 
@@ -113,4 +119,7 @@ def handle_cli(args) -> None:
     if as_json:
         _emit(payload)
         return
-    print(render_session_text(payload) if cmd == "session" else render_text())
+    if cmd == "session":
+        print(render_session_text(payload))
+    else:
+        print(render_text(getattr(args, "session", None)))
