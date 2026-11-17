@@ -10,12 +10,16 @@ session store:
 ## Surfaces
 - Desktop status-bar chip (this folder's `desktop/plugin.js`, published to
   `~/.hermes/desktop-plugins/usage-bar/`) for the model the focused
-  conversation is running (`host.state.activeSessionId`), three values in
+  conversation is running (`host.state.model`), three values in
   order Convo | Daily | Monthly:
   `claude-opus-5-5 $0.42 | $0.74 | $57.70`
-  Hover for tokens, sessions, provider. Refreshes on every turn end, on
-  conversation switch, + 30s backstop. Hidden when the conversation has no
-  model yet. Local models show $0.00 until they get a real price model.
+  The conversation value is the app's own live usage atom
+  (`host.state.focusedUsage` — same numbers the Usage panel shows, updates
+  in real time); today/month come from the profile's CLI
+  (`usagebar summary --model <model>`). Hover for tokens, sessions,
+  context %, provider. Refreshes on every turn end, on model switch, + 30s
+  backstop. Hidden when no session is focused. Local models show $0.00
+  until they get a real price model.
 - `hermes usagebar` / `hermes usagebar summary [--session <session-id>] --json`
 - `hermes usagebar session <session-id> [--json]`
 - `/usagebar` and `/usagebar session <session-id>` slash commands

@@ -10,16 +10,13 @@ import { host, STATUSBAR_AREAS, useQuery, useQueryClient, useValue } from "@herm
  *
  *   claude-opus-5-5 $0.42 | $0.74 | $57.70
  *
- * Three values in order: this conversation | today | this calendar month
- * (cost estimates for that model). Hover for tokens, sessions, provider.
+ * Three values in order: this conversation | today | this calendar month.
+ * The conversation value is the app's own live usage atom
+ * (host.state.focusedUsage — same numbers the app's Usage panel shows);
+ * today/month come from the focused profile's CLI
+ * (usagebar summary --model <model>), i.e. read-only SQL over state.db.
  *
- * Data path
- *   host.requestProfile(route, "cli.exec",
- *     { argv: ["--profile", p, "usagebar", "summary", "--session", sid, "--json"] })
- *   -> the focused profile's Hermes CLI -> read-only SQL over state.db.
- *   Each call is a fresh process, so the plugin works without a gateway restart.
- *
- * Refresh: every turn end (busy -> idle), on conversation switch, 30s backstop.
+ * Refresh: every turn end (busy -> idle), on model switch, 30s backstop.
  * Theme variables only — no hard-coded colours, so it follows every skin.
  */
 const CLI_TIMEOUT_MS = 20_000;
@@ -86,16 +83,18 @@ function useRefreshOnTurnEnd(prefix) {
 }
 
 function money(v) {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  return `$${v >= 100 ? v.toFixed(0) : v.toFixed(2)}`;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return `$${n >= 100 ? n.toFixed(0) : n.toFixed(2)}`;
 }
 
 function compact(n) {
-  if (n === null || n === undefined) return "—";
-  if (n < 1000) return String(Math.round(n));
-  if (n < 1e6) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}K`;
-  if (n < 1e9) return `${(n / 1e6).toFixed(1)}M`;
-  return `${(n / 1e9).toFixed(1)}B`;
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  if (v < 1000) return String(Math.round(v));
+  if (v < 1e6) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}K`;
+  if (v < 1e9) return `${(v / 1e6).toFixed(1)}M`;
+  return `${(v / 1e9).toFixed(1)}B`;
 }
 
 function shortDate(iso, kind) {
@@ -107,39 +106,45 @@ function shortDate(iso, kind) {
 }
 
 function shortModel(name) {
-  const base = String(name || "").split("[").split("(")[0].trim();
+  let base = String(name || "").split("/").pop().split("[").split("(")[0].trim();
   return base.length > 20 ? `${base.slice(0, 19)}…` : base;
 }
 
-function ModelChip({ data }) {
-  const m = data.model;
-  if (!m) return null;
-  const c = m.convo, t = m.today, mo = m.month;
-  if (!c || !t || !mo) return null;
-  const label = shortModel(m.name);
-  const todayLabel = shortDate(data.today, "day");
-  const monthLabel = shortDate(data.month, "month");
-  const tip = [
-    `${m.name} (${m.provider || "unknown provider"}) — Hermes cost estimates, not provider billing`,
-    `This conversation: ${money(c.cost_usd)} · ${compact(c.tokens)} tokens`,
-    `Today (${todayLabel}): ${money(t.cost_usd)} · ${compact(t.tokens)} tokens · ${t.sessions} sessions`,
-    `Month (${monthLabel}): ${money(mo.cost_usd)} · ${compact(mo.tokens)} tokens · ${mo.sessions} sessions`,
-    `Updated ${new Date(data.generated_at).toLocaleTimeString()}`,
-  ].join("\n");
+function ModelChip({ model, convo, ranges, dayLabel, monthLabel, updated }) {
+  const label = shortModel(model);
+  const hasLive = convo && Number.isFinite(convo.cost_usd);
+  const hasRanges = !!(ranges && ranges.today && ranges.month);
+  if (!hasLive && !hasRanges) return null;
+  const cCost = hasLive ? money(convo.cost_usd) : "—";
+  const tCost = hasRanges ? money(ranges.today.cost_usd) : "—";
+  const mCost = hasRanges ? money(ranges.month.cost_usd) : "—";
+  const lines = [
+    `${model}${hasRanges && ranges.provider ? ` (${ranges.provider})` : ""} — ${hasLive ? "live" : "estimated"} conversation stats, not provider billing`,
+    hasLive
+      ? `This conversation: ${cCost} · ${compact(convo.tokens)} tokens${Number.isFinite(convo.context_percent) ? ` · ctx ${Math.round(convo.context_percent)}%` : ""}`
+      : "This conversation: —",
+    hasRanges
+      ? `Today (${dayLabel}): ${tCost} · ${compact(ranges.today.tokens)} tokens · ${ranges.today.sessions} sessions`
+      : "Today: —",
+    hasRanges
+      ? `Month (${monthLabel}): ${mCost} · ${compact(ranges.month.tokens)} tokens · ${ranges.month.sessions} sessions`
+      : "Month: —",
+  ];
+  if (updated) lines.push(`Updated ${new Date(updated).toLocaleTimeString()}`);
   return _jsx("button", {
     type: "button",
-    title: tip,
-    "aria-label": `${label}: ${money(c.cost_usd)} this conversation, ${money(t.cost_usd)} today, ${money(mo.cost_usd)} this month`,
+    title: lines.join("\n"),
+    "aria-label": `${label}: ${cCost} this conversation, ${tCost} today, ${mCost} this month`,
     className: CHIP,
     children: _jsxs("span", {
       className: "inline-flex items-center gap-1 whitespace-nowrap",
       children: [
         _jsx("span", { className: LABEL, children: label }),
-        _jsx("span", { className: VALUE, children: money(c.cost_usd) }),
+        _jsx("span", { className: VALUE, children: cCost }),
         _jsx("span", { className: SEP, children: "|" }),
-        _jsx("span", { className: VALUE, children: money(t.cost_usd) }),
+        _jsx("span", { className: VALUE, children: tCost }),
         _jsx("span", { className: SEP, children: "|" }),
-        _jsx("span", { className: VALUE, children: money(mo.cost_usd) }),
+        _jsx("span", { className: VALUE, children: mCost }),
       ],
     }),
   });
@@ -147,19 +152,33 @@ function ModelChip({ data }) {
 
 function UsageBar() {
   const { scope, key } = useScope();
-  const activeSessionId = useValue(host.state.activeSessionId);
+  const rawUsage = useValue(host.state.focusedUsage);
+  const rawModel = useValue(host.state.model);
   useRefreshOnTurnEnd(PREFIX);
-  const sid = activeSessionId ? String(activeSessionId).trim() : "";
+  const model = rawModel ? String(rawModel).trim() : "";
+  const convo = rawUsage && typeof rawUsage === "object"
+    ? { cost_usd: rawUsage.cost_usd, tokens: rawUsage.total, context_percent: rawUsage.context_percent }
+    : null;
   const q = useQuery({
-    queryKey: [...PREFIX, key, sid],
-    queryFn: () => profileCli(scope, "usagebar", ["summary", ...(sid ? ["--session", sid] : [])]),
+    queryKey: [...PREFIX, key, model],
+    queryFn: () => profileCli(scope, "usagebar", ["summary", "--model", model]),
+    enabled: !!model,
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchOnWindowFocus: false,
     retry: 0,
   });
-  if (!q.data) return null; // stay invisible until we have a real number (or if the backend is off)
-  return _jsx(ModelChip, { data: q.data });
+  if (!model) return null;
+  const d = q.data;
+  const ranges = d && d.model ? { today: d.model.today, month: d.model.month, provider: d.model.provider } : null;
+  return _jsx(ModelChip, {
+    model: model,
+    convo: convo,
+    ranges: ranges,
+    dayLabel: d ? shortDate(d.today, "day") : "—",
+    monthLabel: d ? shortDate(d.month, "month") : "—",
+    updated: d && d.generated_at ? d.generated_at : null,
+  });
 }
 
 export default {

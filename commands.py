@@ -28,18 +28,19 @@ def _fmt(n) -> str:
     return str(int(n or 0))
 
 
-def render_text(session_id: str = None) -> str:
-    s = data.summary(session_id=session_id)
+def render_text(session_id: str = None, model: str = None) -> str:
+    s = data.summary(session_id=session_id, model=model)
     lines = [
         f"Usage - {s['today']} today, {s['month']} month "
         "(costs are Hermes estimates, not provider billing):"
     ]
     if s.get("model"):
         m = s["model"]
-        lines.append(
-            f"  Current model {m['name']} ({m['provider']}):"
-            f" ${m['convo']['cost_usd']:.2f} convo | ${m['today']['cost_usd']:.2f} today | ${m['month']['cost_usd']:.2f} month"
-        )
+        parts = [f"  {m['name']} ({m['provider'] or 'unknown provider'}):"]
+        if m.get("convo"):
+            parts.append(f" ${m['convo']['cost_usd']:.2f} convo")
+        parts.append(f" ${m['today']['cost_usd']:.2f} today | ${m['month']['cost_usd']:.2f} month")
+        lines.append("".join(parts))
     for group in ("anthropic", "gemini"):
         p = s["providers"][group]
         t, mm = p["today"], p["month"]
@@ -83,7 +84,8 @@ def slash_command(raw_args: str) -> str:
 def setup_argparse(subparser) -> None:
     subs = subparser.add_subparsers(dest="usagebar_command")
     p = subs.add_parser("summary", help="This conversation's, today's and this month's cost and tokens per paid provider")
-    p.add_argument("--session", default=None, help="Session id to include per-provider conversation usage")
+    p.add_argument("--session", default=None, help="Session id: show that conversation's current model and its conversation usage")
+    p.add_argument("--model", default=None, help="Model name: show today/month totals for that model (provider prefix optional)")
     p.add_argument("--json", action="store_true", help="Emit JSON for the desktop status bar")
     s = subs.add_parser("session", help="Usage for one conversation (session id)")
     s.add_argument("session_id", help="Session id, e.g. 20261116_224351_297c0c")
@@ -100,7 +102,7 @@ def handle_cli(args) -> None:
     as_json = bool(getattr(args, "json", False))
     try:
         if cmd == "summary":
-            payload = data.summary(session_id=getattr(args, "session", None))
+            payload = data.summary(session_id=getattr(args, "session", None), model=getattr(args, "model", None))
         elif cmd == "session":
             sid = (getattr(args, "session_id", None) or "").strip()
             if not sid:
@@ -122,4 +124,4 @@ def handle_cli(args) -> None:
     if cmd == "session":
         print(render_session_text(payload))
     else:
-        print(render_text(getattr(args, "session", None)))
+        print(render_text(getattr(args, "session", None), getattr(args, "model", None)))

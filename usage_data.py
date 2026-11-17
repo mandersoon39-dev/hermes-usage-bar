@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.3.0"
 
 #: ``billing_provider`` values (lower-cased) that map to a named display group.
 NAMED_GROUPS = {
@@ -219,18 +219,41 @@ def session_usage(session_id: str) -> dict:
     }
 
 
-def summary(session_id: str = None) -> dict:
-    """Per display group: this conversation (when given), today, this calendar month."""
+def summary(session_id: str = None, model: str = None) -> dict:
+    """Per display group today/month, plus a model section.
+
+    With ``model``: today/month totals for that model (the desktop chip's
+    conversation value comes from the app's live usage atom instead).
+    With ``session_id``: the session's current model and its convo/today/month.
+    """
     now = datetime.now()
     today_ts = datetime(now.year, now.month, now.day).timestamp()
     month_ts = datetime(now.year, now.month, 1).timestamp()
     sid = (session_id or "").strip() or None
+    mdl = (model or "").strip() or None
     with _connect() as conn:
         today_b = _bucket(conn, start_ts=today_ts)
         month_b = _bucket(conn, start_ts=month_ts)
         convo_b = _bucket(conn, session_id=sid) if sid else {}
     current = None
-    if sid:
+    if mdl:
+        # The app's model string may carry a provider prefix; the store keeps
+        # the bare name, so match both.
+        candidates = [mdl]
+        if "/" in mdl:
+            candidates.append(mdl.rsplit("/", 1)[1])
+        ph = ", ".join("?" for _ in candidates)
+        prov = conn.execute(
+            f"SELECT billing_provider FROM session_model_usage WHERE model IN ({ph}) LIMIT 1",
+            candidates,
+        ).fetchone()
+        current = {
+            "name": mdl,
+            "provider": prov["billing_provider"] if prov else None,
+            "today": _totals(conn, f"model IN ({ph}) AND COALESCE(first_seen, last_seen) >= ?", (*candidates, today_ts)),
+            "month": _totals(conn, f"model IN ({ph}) AND COALESCE(first_seen, last_seen) >= ?", (*candidates, month_ts)),
+        }
+    elif sid:
         srow = conn.execute(
             "SELECT model, billing_provider FROM sessions WHERE id = ?", (sid,)
         ).fetchone()
